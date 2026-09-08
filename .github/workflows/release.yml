@@ -1,0 +1,26 @@
+name: release
+
+# Build the extension .vsix and attach it to a GitHub Release whenever a
+# v* tag is pushed, so users can install a prebuilt artifact without building.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  vsix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm run compile
+      - run: npm run package
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dsh-chat.vsix

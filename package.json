@@ -1,0 +1,106 @@
+{
+  "name": "dsh-chat",
+  "displayName": "DeepSeek Harness Chat",
+  "description": "Open the DeepSeek Harness web chat in a VSCode panel. Spawns a local `dsh web` process and embeds it via iframe.",
+  "version": "0.1.0",
+  "publisher": "leon-nie-pnc",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leon-nie-pnc/dsh-vscode-extension.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "dsh",
+          "title": "DeepSeek Harness",
+          "icon": "media/dsh.svg"
+        }
+      ]
+    },
+    "views": {
+      "dsh": [
+        {
+          "type": "webview",
+          "id": "dsh-chat",
+          "name": ""
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dsh.openPanel",
+        "title": "DSH: Open chat panel",
+        "category": "DeepSeek Harness"
+      },
+      {
+        "command": "dsh.start",
+        "title": "DSH: Start server",
+        "category": "DeepSeek Harness"
+      },
+      {
+        "command": "dsh.restart",
+        "title": "DSH: Restart server",
+        "category": "DeepSeek Harness"
+      },
+      {
+        "command": "dsh.stop",
+        "title": "DSH: Stop server",
+        "category": "DeepSeek Harness"
+      },
+      {
+        "command": "dsh.openInBrowser",
+        "title": "DSH: Open in browser",
+        "category": "DeepSeek Harness"
+      }
+    ],
+    "configuration": {
+      "title": "DeepSeek Harness",
+      "properties": {
+        "dsh.binPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the `dsh` binary. Leave empty to resolve from DSH_BIN, then PATH."
+        },
+        "dsh.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host the embedded `dsh web` server binds to. Only 127.0.0.1 is supported."
+        },
+        "dsh.port": {
+          "type": "number",
+          "default": 3080,
+          "description": "Port the embedded `dsh web` server binds to."
+        },
+        "dsh.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments passed to `dsh web`."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "vscode:prepublish": "node esbuild.mjs --production",
+    "package": "npx --yes @vscode/vsce package --no-dependencies -o dsh-chat.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}
