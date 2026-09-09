@@ -15,10 +15,11 @@
  * @module dsh-process
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { get } from 'node:http'
 import type { Readable } from 'node:stream'
 import type { DshConfig } from './config'
+import { startAuthProxy, type AuthProxy } from './dsh-proxy'
 
 /** Status of the supervised server, surfaced on the status bar. */
 export type DshStatus = 'stopped' | 'starting' | 'running' | 'error'
@@ -38,6 +39,8 @@ export interface RunningDsh {
   url: string
   /** The child process, present only when this extension spawned it. */
   child?: ChildProcess
+  /** The auth proxy fronting a spawned, token-guarded server; absent for an adopted tokenless one. */
+  proxy?: AuthProxy
   error?: string
 }
 
@@ -106,6 +109,12 @@ export async function startDsh(config: DshConfig, cwd: string, onLog: (line: str
     return { status: 'running', url: config.url }
   }
 
+  // A `dsh web` orphaned by a previous window reload can keep holding the port
+  // and would make the spawn below fail with EADDRINUSE. The adopt check above
+  // already rejected it (a token-guarded root answers 401, not < 400), so it
+  // exposes no token to reuse; reclaim the port before spawning a fresh one.
+  await reclaimPort(config.port)
+
   const child = spawn(config.bin, ['web', '--host', config.host, '--port', String(config.port), '--no-open', ...config.extraArgs], {
     cwd,
     env: process.env,
@@ -171,7 +180,16 @@ export async function startDsh(config: DshConfig, cwd: string, onLog: (line: str
     return failed(`dsh web announced ${config.url} but it did not become reachable. See the "DSH" output channel for logs.`)
   }
 
-  return { status: 'running', url, child }
+  // The webview iframe is cross-origin to the server, so it cannot carry the
+  // SameSite=Strict auth cookie. Front the server with a proxy that injects the
+  // cookie on every request; the iframe loads the proxy, which needs none.
+  let proxy: AuthProxy
+  try {
+    proxy = await startAuthProxy(config.url, url)
+  } catch (error) {
+    return failed(`dsh web auth proxy failed to start: ${error instanceof Error ? error.message : String(error)} See the "DSH" output channel for logs.`)
+  }
+  return { status: 'running', url: proxy.url, child, proxy }
 }
 
 /**
@@ -186,4 +204,67 @@ export function stopChild(child: ChildProcess | undefined): void {
   }, 2_000)
   child.once('exit', () => clearTimeout(timer))
   if (timer.unref !== undefined) timer.unref()
+}
+
+/** Run a lookup command and return its stdout, or '' when the tool is absent or fails. */
+function execCapture(cmd: string, args: readonly string[]): Promise<string> {
+  return new Promise(resolve => {
+    execFile(cmd, [...args], { timeout: 3_000 }, (_error, stdout) => resolve(stdout))
+  })
+}
+
+/** Collect the distinct positive integers from lines of a PID listing. */
+function parsePids(values: Iterable<string>): number[] {
+  const pids = new Set<number>()
+  for (const value of values) {
+    const pid = Number(value.trim())
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid)
+  }
+  return [...pids]
+}
+
+/**
+ * PIDs currently listening on `port`, via the platform's own socket lookup.
+ * Returns an empty list when the lookup tool is unavailable.
+ * @param port - the loopback port to inspect.
+ */
+async function listenerPids(port: number): Promise<number[]> {
+  if (process.platform === 'win32') {
+    const out = await execCapture('netstat', ['-ano', '-p', 'tcp'])
+    const pids: string[] = []
+    for (const line of out.split(/\r?\n/)) {
+      const match = /:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/.exec(line)
+      if (match !== null && Number(match[1]) === port) pids.push(match[2])
+    }
+    return parsePids(pids)
+  }
+  if (process.platform === 'darwin') {
+    return parsePids((await execCapture('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'])).split(/\r?\n/))
+  }
+  const out = await execCapture('ss', ['-tlnpH', `sport = :${port}`])
+  return parsePids([...out.matchAll(/pid=(\d+)/g)].map(match => match[1]))
+}
+
+/**
+ * Kill any process listening on `port` and wait until the socket is free.
+ *
+ * Only reached after the adopt check declined the current listener, so the
+ * listener is a stale `dsh web` (or a process shutting down), never a server
+ * this extension wants to keep. Best-effort: a missing lookup tool leaves the
+ * port untouched and the caller's spawn surfaces a still-occupied port itself.
+ * @param port - the loopback port to reclaim.
+ */
+async function reclaimPort(port: number): Promise<void> {
+  const initial = await listenerPids(port)
+  if (initial.length === 0) return
+  for (const pid of initial) {
+    try { process.kill(pid, 'SIGTERM') } catch { /* already exited between lookup and signal */ }
+  }
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if ((await listenerPids(port)).length === 0) return
+    await sleep(HEALTH_POLL_MS)
+  }
+  for (const pid of await listenerPids(port)) {
+    try { process.kill(pid, 'SIGKILL') } catch { /* already exited */ }
+  }
 }

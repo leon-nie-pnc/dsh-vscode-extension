@@ -97,7 +97,7 @@ async function ensureRunning(): Promise<RunningDsh | undefined> {
 function renderView(config: DshConfig, server: RunningDsh | undefined): void {
   if (chatView === undefined) return
   chatView.webview.html = server?.status === 'running'
-    ? iframeHtml(server.url, config.port)
+    ? iframeHtml(server.url, server.proxy?.port ?? config.port)
     : errorHtml(server?.error ?? 'failed to start dsh web')
 }
 
@@ -112,6 +112,7 @@ async function restart(): Promise<void> {
 /** Stop the server this extension spawned; leave any adopted server alone. */
 function stop(): void {
   if (running === undefined) return
+  running.proxy?.dispose()
   stopChild(running.child)
   running = undefined
   setStatus('stopped')
