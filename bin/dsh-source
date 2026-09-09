@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Source-tree launcher for the dsh-chat extension: run `dsh` from the harness
+# checkout via tsx so the extension works without a global install.
+# Set as the `dsh.binPath` VSCode setting during source development.
+#
+# Kept in THIS repo (not inside the harness working tree) so reverting or
+# stashing the harness never deletes the launcher the extension depends on.
+# Override the harness checkout with DSH_HARNESS_REPO.
+set -euo pipefail
+REPO="${DSH_HARNESS_REPO:-/home/bj/pix_new/harness/deepseek-harness}"
+cd "$REPO"
+exec node --import tsx/esm apps/cli/src/bin.ts "$@"
