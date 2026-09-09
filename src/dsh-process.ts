@@ -1,9 +1,17 @@
 /**
  * Spawn and supervise one local `dsh web` process for the extension.
  *
- * Reuses an already-running server when the target URL answers, so a user's
- * manually started `dsh web` is adopted instead of a second process racing
- * for the port. Only a process this class spawned is killed on disposal.
+ * `dsh web` guards its UI with a per-launch token: it prints a line
+ * `dsh web: http://127.0.0.1:PORT/?token=XXXX` on stdout, and the root path
+ * returns 401 until that URL is visited (which sets an auth cookie). The token
+ * is random per launch and lives only in memory, so the only way to obtain it
+ * is to parse the child's stdout. This module captures that authenticated URL
+ * and reports it as the URL to load in the webview iframe.
+ *
+ * Reuses an already-running server only when the base URL answers below 400
+ * (an older, tokenless server), since a token-guarded server started elsewhere
+ * exposes no token to adopt. Only a process this class spawned is killed on
+ * disposal.
  * @module dsh-process
  */
 
@@ -15,14 +23,18 @@ import type { DshConfig } from './config'
 /** Status of the supervised server, surfaced on the status bar. */
 export type DshStatus = 'stopped' | 'starting' | 'running' | 'error'
 
-/** How long to keep polling `/` for a healthy response before failing. */
+/** How long to wait for the authenticated URL line and reachability before failing. */
 const HEALTH_TIMEOUT_MS = 30_000
-/** Poll interval between health checks. */
+/** Poll interval between reachability checks. */
 const HEALTH_POLL_MS = 250
+/** Matches the authenticated URL `dsh web` prints, e.g. `http://127.0.0.1:3080/?token=abc`. */
+const TOKEN_URL_RE = /https?:\/\/\S*[?&]token=[A-Za-z0-9_-]+/
 
 /** A supervised `dsh web` process and its state. */
 export interface RunningDsh {
   status: DshStatus
+  /** The URL to load in the iframe: the authenticated `?token=` URL when this
+   * extension spawned the server, or the base URL for an adopted one. */
   url: string
   /** The child process, present only when this extension spawned it. */
   child?: ChildProcess
@@ -30,32 +42,42 @@ export interface RunningDsh {
 }
 
 /**
- * Whether `url` currently serves an HTTP 200 response.
- * @param url - the base URL to probe.
+ * The HTTP status `url` currently returns, or undefined when unreachable.
+ * @param url - the URL to probe.
  * @param timeoutMs - per-probe timeout.
- * @returns true when the server answers 200.
+ * @returns the status code, or undefined on connection error/timeout.
  */
-export function isServerHealthy(url: string, timeoutMs = 1_000): Promise<boolean> {
+function probeStatus(url: string, timeoutMs = 1_000): Promise<number | undefined> {
   return new Promise(resolve => {
     const req = get(url, res => {
       res.resume()
-      resolve(res.statusCode === 200)
+      resolve(res.statusCode)
     })
-    req.on('error', () => resolve(false))
+    req.on('error', () => resolve(undefined))
     req.setTimeout(timeoutMs, () => {
       req.destroy()
-      resolve(false)
+      resolve(undefined)
     })
   })
 }
 
 /**
- * Poll `url` until it answers 200 or the timeout elapses.
+ * Whether `url` currently answers with an authorized status (below 400).
+ *
+ * A token-guarded root without a cookie returns 401 (not healthy); an
+ * authenticated `?token=` URL returns 303 (healthy), and a tokenless server
+ * returns 200 (healthy).
  * @param url - the base URL to probe.
- * @param timeoutMs - overall deadline.
- * @returns true when the server became healthy.
+ * @param timeoutMs - per-probe timeout.
+ * @returns true when the server answers below 400.
  */
-async function waitForHealthy(url: string, timeoutMs: number = HEALTH_TIMEOUT_MS): Promise<boolean> {
+export async function isServerHealthy(url: string, timeoutMs = 1_000): Promise<boolean> {
+  const status = await probeStatus(url, timeoutMs)
+  return status !== undefined && status < 400
+}
+
+/** Poll `url` until it answers below 400 or the timeout elapses. */
+async function waitForReachable(url: string, timeoutMs: number = HEALTH_TIMEOUT_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (await isServerHealthy(url)) return true
@@ -69,25 +91,41 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Spawn a supervised `dsh web` process, adopting any already-running server.
+ * Spawn a supervised `dsh web` process, capturing its authenticated URL.
  *
- * When the target URL already answers 200 the existing server is reused and
- * no child is spawned. Otherwise a child is spawned and polled for health.
+ * When the base URL already answers below 400 an existing tokenless server is
+ * reused and no child is spawned. Otherwise a child is spawned, its stdout is
+ * scanned for the `?token=` URL, and that URL is confirmed reachable.
  * @param config - the resolved launch configuration.
  * @param cwd - the working directory for the spawned process.
- * @param onLog - sink for the child's stderr lines (diagnostics).
- * @returns the running server state.
+ * @param onLog - sink for the child's stdout/stderr lines (diagnostics).
+ * @returns the running server state, with `url` set to the authenticated URL.
  */
 export async function startDsh(config: DshConfig, cwd: string, onLog: (line: string) => void): Promise<RunningDsh> {
   if (await isServerHealthy(config.url)) {
     return { status: 'running', url: config.url }
   }
 
-  const child = spawn(config.bin, ['web', '--host', config.host, '--port', String(config.port), ...config.extraArgs], {
+  const child = spawn(config.bin, ['web', '--host', config.host, '--port', String(config.port), '--no-open', ...config.extraArgs], {
     cwd,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+
+  let authenticatedUrl: string | undefined
+  let onUrl: ((url: string) => void) | undefined
+  const urlSeen = new Promise<string>(resolve => { onUrl = resolve })
+
+  const handleLine = (line: string): void => {
+    onLog(line)
+    if (authenticatedUrl === undefined) {
+      const match = TOKEN_URL_RE.exec(line)
+      if (match !== null) {
+        authenticatedUrl = match[0]
+        onUrl?.(authenticatedUrl)
+      }
+    }
+  }
 
   const drain = (stream: Readable): void => {
     let buffer = ''
@@ -96,41 +134,44 @@ export async function startDsh(config: DshConfig, cwd: string, onLog: (line: str
       const lines = buffer.split(/\r?\n/)
       buffer = lines.pop() ?? ''
       for (const line of lines) {
-        if (line.trim() !== '') onLog(line)
+        if (line.trim() !== '') handleLine(line)
       }
     })
     stream.on('end', () => {
-      if (buffer.trim() !== '') onLog(buffer)
+      if (buffer.trim() !== '') handleLine(buffer)
     })
   }
   // stdio is ['ignore','pipe','pipe'], so both streams are present.
   if (child.stdout !== null) drain(child.stdout)
   if (child.stderr !== null) drain(child.stderr)
 
-  const exit = new Promise<'exited'>((resolve, reject) => {
+  const exit = new Promise<never>((_resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (code, signal) => {
-      if (code === 0 || signal === 'SIGTERM') resolve('exited')
-      else reject(new Error(`dsh web exited with code ${code} signal ${signal}`))
+      reject(new Error(`dsh web exited with code ${code} signal ${signal}`))
     })
   })
 
-  const healthy = await Promise.race([
-    waitForHealthy(config.url).then(ok => ok),
-    exit.then(() => false),
-  ])
-
-  if (!healthy) {
+  const failed = (error: string): RunningDsh => {
     if (child.exitCode === null) stopChild(child)
-    return {
-      status: 'error',
-      url: config.url,
-      child,
-      error: `dsh web did not become healthy at ${config.url}. See the "DSH" output channel for logs.`,
-    }
+    return { status: 'error', url: config.url, child, error }
   }
 
-  return { status: 'running', url: config.url, child }
+  let url: string
+  try {
+    url = await Promise.race([urlSeen, exit, sleep(HEALTH_TIMEOUT_MS).then(() => { throw new Error('timeout') })])
+  } catch (error) {
+    const reason = error instanceof Error && error.message === 'timeout'
+      ? `dsh web did not announce its URL within ${HEALTH_TIMEOUT_MS / 1000}s.`
+      : `dsh web failed to start: ${error instanceof Error ? error.message : String(error)}`
+    return failed(`${reason} See the "DSH" output channel for logs.`)
+  }
+
+  if (!await waitForReachable(url)) {
+    return failed(`dsh web announced ${config.url} but it did not become reachable. See the "DSH" output channel for logs.`)
+  }
+
+  return { status: 'running', url, child }
 }
 
 /**

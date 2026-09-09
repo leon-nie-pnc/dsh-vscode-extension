@@ -97,7 +97,7 @@ async function ensureRunning(): Promise<RunningDsh | undefined> {
 function renderView(config: DshConfig, server: RunningDsh | undefined): void {
   if (chatView === undefined) return
   chatView.webview.html = server?.status === 'running'
-    ? iframeHtml(config)
+    ? iframeHtml(server.url, config.port)
     : errorHtml(server?.error ?? 'failed to start dsh web')
 }
 
@@ -159,21 +159,26 @@ function messageOf(error: unknown): string {
  * The chat iframe document. The CSP allows only the loopback server as a frame
  * source, so the embedded app cannot be replaced by another origin. The iframe
  * is sized to the viewport (100vw/100vh) so it fills the panel view.
- * @param config - the resolved launch configuration.
+ *
+ * `src` is the authenticated `?token=` URL announced by `dsh web`; visiting it
+ * sets the auth cookie the framed app needs. The CSP allows the whole loopback
+ * origin, so the token query on `src` is permitted.
+ * @param src - the authenticated URL to frame.
+ * @param port - the loopback port, for the frame-src CSP entry.
  */
-function iframeHtml(config: DshConfig): string {
+function iframeHtml(src: string, port: number): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; frame-src http://127.0.0.1:${config.port};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; frame-src http://127.0.0.1:${port};">
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: var(--vscode-editor-background); }
     iframe { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: 0; display: block; }
   </style>
 </head>
 <body>
-  <iframe src="${config.url}" allow="clipboard-read; clipboard-write"></iframe>
+  <iframe src="${src}" allow="clipboard-read; clipboard-write"></iframe>
 </body>
 </html>`
 }
