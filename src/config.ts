@@ -31,8 +31,10 @@ export interface DshConfig {
 
 /**
  * Locate the `dsh` executable, or throw a diagnostic that tells the user how
- * to install it. Resolution order: `dsh.binPath` config, `DSH_BIN` env, then
- * `dsh` on PATH.
+ * to install it. Resolution order: `dsh.binPath` config, `DSH_BIN` env, the
+ * source launcher (`bin/dsh-source`) in an open workspace folder, then `dsh`
+ * on PATH. Auto-locating the launcher means a source checkout works with no
+ * machine-specific `dsh.binPath` — it follows wherever the repo is opened.
  * @returns the absolute executable path.
  */
 export function resolveDshBin(config: vscode.WorkspaceConfiguration, binFromPath?: string): string {
@@ -51,6 +53,8 @@ export function resolveDshBin(config: vscode.WorkspaceConfiguration, binFromPath
     }
     return fromEnv
   }
+  const launcher = findWorkspaceLauncher()
+  if (launcher !== undefined) return launcher
   const found = binFromPath ?? which('dsh')
   if (found === undefined) {
     throw new Error(
@@ -59,6 +63,20 @@ export function resolveDshBin(config: vscode.WorkspaceConfiguration, binFromPath
     )
   }
   return found
+}
+
+/**
+ * Look for the source-tree launcher `bin/dsh-source` in any open workspace
+ * folder. This is what makes a source checkout self-adaptive: open the
+ * extension repo and the launcher is found without any absolute path setting.
+ * @returns the launcher's absolute path, or undefined when none is present.
+ */
+function findWorkspaceLauncher(): string | undefined {
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const candidate = join(folder.uri.fsPath, 'bin', 'dsh-source')
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 /**

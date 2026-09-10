@@ -7,6 +7,10 @@
 # stashing the harness never deletes the launcher the extension depends on.
 # Override the harness checkout with DSH_HARNESS_REPO.
 set -euo pipefail
-REPO="${DSH_HARNESS_REPO:-/home/bj/pix_new/harness/deepseek-harness}"
+# Locate the harness checkout relative to this launcher so the path follows the
+# repo wherever it is cloned. Layout: <parent>/dsh-vscode-extension/bin/dsh-source
+# alongside <parent>/deepseek-harness. Override with DSH_HARNESS_REPO.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${DSH_HARNESS_REPO:-$(cd "$SCRIPT_DIR/../../deepseek-harness" 2>/dev/null && pwd || echo "$SCRIPT_DIR/../../deepseek-harness")}"
 cd "$REPO"
 exec node --import tsx/esm apps/cli/src/bin.ts "$@"
