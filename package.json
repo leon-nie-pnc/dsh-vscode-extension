@@ -68,7 +68,7 @@
         "dsh.binPath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to the `dsh` binary. Leave empty to resolve from DSH_BIN, then PATH."
+          "description": "Absolute path to the `dsh` binary. Leave empty to resolve from DSH_BIN, then the source launcher (bin/dsh-source) in an open workspace folder, then PATH."
         },
         "dsh.host": {
           "type": "string",

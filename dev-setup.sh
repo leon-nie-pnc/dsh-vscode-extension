@@ -23,7 +23,7 @@ set -euo pipefail
 
 PORT=3080
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS="${DSH_HARNESS_REPO:-$SCRIPT_DIR/../harness/deepseek-harness}"
+HARNESS="${DSH_HARNESS_REPO:-$SCRIPT_DIR/../deepseek-harness}"
 
 REBUILD_HARNESS=0
 SKIP_HARNESS=0
